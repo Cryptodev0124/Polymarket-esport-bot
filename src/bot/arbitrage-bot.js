@@ -189,7 +189,7 @@ class ArbitrageBot {
             );
 
             // Start monitoring this match
-            this.monitorMatch(gameId, matchId, marketData.id);
+            this.monitorMatch(matchId, marketData.id);
             this.activeMatches.set(matchId, {
                 match,
                 marketId: marketData.id,
@@ -202,7 +202,7 @@ class ArbitrageBot {
         }
     }
 
-    async monitorMatch(gameId, matchId, marketId) {
+    async monitorMatch(matchId, marketId) {
         // Poll for match events every 2 seconds
         const pollInterval = setInterval(async () => {
             try {
@@ -212,7 +212,8 @@ class ArbitrageBot {
                 }
 
                 // Get latest events
-                const events = await DataFetcher.getMatchEvents(gameId);
+                const events = await DataFetcher.getMatchEvents(matchId);
+                console.log('events', events);
                 
                 const matchInfo = this.activeMatches.get(matchId);
 
