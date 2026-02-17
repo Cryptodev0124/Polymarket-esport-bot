@@ -2,6 +2,7 @@ const axios = require('axios');
 const { PANDA_SCORE_BASE_URL } = require('../../config/constants');
 require('dotenv').config();
 const WebSocket = require('ws');
+const EventEmitter = require('events');
 
 class DataFetcher {
   constructor() {
@@ -10,6 +11,9 @@ class DataFetcher {
       'Authorization': `Bearer ${this.apiKey}`,
       'Accept': 'application/json'
     };
+    // live sockets and emitters per matchId
+    this.sockets = new Map();
+    this.emitters = new Map();
   }
 
   async getLiveMatches() {
@@ -68,24 +72,87 @@ class DataFetcher {
       console.log('debug->matchId', matchId);
       const socket = new WebSocket(`wss://live.pandascore.co/matches/${matchId}?token=${process.env.PANDA_SCORE_API_KEY}`);
 
-      // socket.onmessage = function (event) {
-      //   console.log(JSON.parse(event.data))
-      //   return JSON.parse(event.data);
-      // }
+      let event;
       socket.on('message', data => {
-        const event = JSON.parse(data);
+        event = JSON.parse(data);
         console.log('Received event:', event);
       });
-      // const response = await axios.get(
-      //   `${PANDA_SCORE_BASE_URL}/lol/games/273905/events`,
-      //   { headers: this.headers }
-      // );
-      // console.log('response', response.data);
-      // return response.data;
+
+      return event;
     } catch (error) {
       console.error(`Error fetching events for match ${matchId}:`, error.message);
       return [];
     }
+  }
+
+  /**
+   * Subscribe to live WebSocket events for a given matchId.
+   * handler(event) will be called for each incoming event.
+   * Returns an unsubscribe() function.
+   */
+  subscribeToMatch(matchId, handler) {
+    if (!matchId) throw new Error('matchId required');
+
+    // create emitter if needed
+    if (!this.emitters.has(matchId)) {
+      this.emitters.set(matchId, new EventEmitter());
+    }
+
+    const emitter = this.emitters.get(matchId);
+    emitter.on('event', handler);
+
+    // create socket if needed
+    if (!this.sockets.has(matchId)) {
+      const wsUrl = `wss://live.pandascore.co/matches/${matchId}?token=${this.apiKey}`;
+      try {
+        const socket = new WebSocket(wsUrl);
+        socket.on('open', () => {
+          // console.debug(`PandaScore WS open for match ${matchId}`);
+        });
+        socket.on('message', raw => {
+          try {
+            const data = JSON.parse(raw.toString());
+            const em = this.emitters.get(matchId);
+            if (em) em.emit('event', data);
+          } catch (e) {
+            console.error('Failed to parse WS message for match', matchId, e && e.message);
+          }
+        });
+        socket.on('error', err => {
+          console.error('PandaScore WS error for match', matchId, err && err.message);
+        });
+        socket.on('close', (code, reason) => {
+          // remove socket and emitter on close
+          // console.debug(`PandaScore WS closed for match ${matchId} ${code}`);
+          this.sockets.delete(matchId);
+          const em = this.emitters.get(matchId);
+          if (em) em.emit('close', { code, reason });
+        });
+
+        this.sockets.set(matchId, socket);
+      } catch (e) {
+        console.error('Failed to create PandaScore WS for match', matchId, e && e.message);
+      }
+    }
+
+    // return unsubscribe fn
+    return () => {
+      try {
+        const em = this.emitters.get(matchId);
+        if (em) em.removeListener('event', handler);
+        // if no more listeners, close socket
+        if (em && em.listenerCount('event') === 0) {
+          const sock = this.sockets.get(matchId);
+          if (sock) {
+            try { sock.terminate(); } catch (e) { sock.close(); }
+            this.sockets.delete(matchId);
+          }
+          this.emitters.delete(matchId);
+        }
+      } catch (e) {
+        // swallow
+      }
+    };
   }
 }
 

@@ -188,12 +188,33 @@ class ArbitrageBot {
                 { upsert: true, new: true }
             );
 
-            // Start monitoring this match
-            this.monitorMatch(matchId, marketData.id);
+            // Start monitoring this match: subscribe to live events via WebSocket
+            const lastEventTime = Date.now();
+            const unsubscribe = DataFetcher.subscribeToMatch(matchId, async (event) => {
+                try {
+                    const info = this.activeMatches.get(matchId);
+                    if (!info) return; // not registered/removed
+                    // Some PandaScore events may use 'timestamp' or 'occurred_at' fields
+                    const ts = event.timestamp || event.occurred_at || Date.now();
+                    const tnum = typeof ts === 'string' ? Date.parse(ts) : Number(ts);
+                    if (isNaN(tnum)) {
+                        // ignore malformed timestamps
+                        return;
+                    }
+                    if (tnum > info.lastEventTime) {
+                        await this.processMatchEvent(matchId, event);
+                        info.lastEventTime = tnum;
+                    }
+                } catch (e) {
+                    logger.error(`Error processing websocket event for match ${matchId}:`, e);
+                }
+            });
+
             this.activeMatches.set(matchId, {
                 match,
                 marketId: marketData.id,
-                lastEventTime: Date.now()
+                lastEventTime,
+                unsubscribe
             });
 
             logger.info(`Registered match: ${match.team1} vs ${match.team2}`);
@@ -210,22 +231,8 @@ class ArbitrageBot {
                     clearInterval(pollInterval);
                     return;
                 }
-
-                // Get latest events
-                const events = await DataFetcher.getMatchEvents(matchId);
-                console.log('events', events);
-                
-                const matchInfo = this.activeMatches.get(matchId);
-
-                for (const event of events) {
-                    // Process event if it's new
-                    if (event.timestamp > matchInfo.lastEventTime) {
-                        await this.processMatchEvent(matchId, event);
-                        matchInfo.lastEventTime = event.timestamp;
-                    }
-                }
-
-                // Update match status
+                // Live events are delivered via WebSocket subscription (stored in this.activeMatches)
+                // Here we only perform periodic status updates
                 await this.updateMatchStatus(matchId);
 
             } catch (error) {
